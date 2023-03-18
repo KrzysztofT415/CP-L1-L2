@@ -1,15 +1,17 @@
 package main
 
 import (
-	"./app"
 	"fmt"
 	"math"
 	"sort"
+
+	"./app"
 )
 
 func main() {
-	n, d, k := 6, 7, 5
-	//n, d, k := scanParameters()
+	//n - vertices_num, d - shortcuts, k - packets, b - backtracks, h - health
+	n, d, k, b, h := 10, 28, 15, 38, 20
+	//n, d, k, b, h := scanParameters()
 
 	printServerChannel := make(chan string, 50)
 	donePrinting := make(chan bool)
@@ -24,24 +26,30 @@ func main() {
 		donePrinting <- true
 	}()
 
-	graph := app.NewGraph(n, d)
+	graph := app.NewGraph(n, d, b)
 
 	printGraph(graph, printServerChannel)
 
 	doneTransmitting := make(chan bool)
+	trashChannel := make(chan *app.Packet)
+	go app.TrashCounter(trashChannel, k, doneTransmitting)
+
 	packets := make([]*app.Packet, k)
 	for i := 0; i < k; i++ {
-		packets[i] = app.NewPacket(i)
+		packets[i] = app.NewPacket(i, h)
 	}
 
 	printServerChannel <- "START OF TRANSFER\n\n"
 	for _, vertex := range graph.VerticesInfo {
-		go app.Transmitter(vertex, printServerChannel)
+		go app.Transmitter(vertex, printServerChannel, trashChannel)
+		go app.Watcher(vertex)
 	}
-	go app.Receiver(graph.Outfall, doneTransmitting, printServerChannel)
+	go app.Receiver(graph.Outfall, printServerChannel, trashChannel)
 	go app.Sender(graph.Source, packets)
+	go app.Hunter(graph, printServerChannel)
 
 	<-doneTransmitting
+	close(graph.Source)
 	close(doneTransmitting)
 	printServerChannel <- "\nEND OF TRANSFER\n---------------\n   LOG\n"
 
@@ -52,8 +60,8 @@ func main() {
 	close(donePrinting)
 }
 
-func scanParameters() (int, int, int) {
-	var n, d, k int
+func scanParameters() (int, int, int, int, int) {
+	var n, d, k, b, h int
 	fmt.Print("N : ")
 	_, _ = fmt.Scanf("%d", &n)
 	n = int(math.Max(float64(n), 1))
@@ -62,12 +70,17 @@ func scanParameters() (int, int, int) {
 	d = int(math.Min(float64(d), float64((n*(n-3))/2)+1))
 	fmt.Print("K : ")
 	_, _ = fmt.Scanf("%d", &k)
-	return n, d, k
+	fmt.Print("B : ")
+	_, _ = fmt.Scanf("%d", &b)
+	d = int(math.Min(float64(d), float64(n*(n-1))/2))
+	fmt.Print("H : ")
+	_, _ = fmt.Scanf("%d", &h)
+	return n, d, k, b, h
 }
 
 func printGraph(graph *app.Graph, print chan<- string) {
 	print <- "---------------\n  GRAPH\nId:  Links:\n 0 == SOURCE\n"
-	for _, v := range graph.VerticesInfo[:len(graph.VerticesInfo)-1] {
+	for _, v := range graph.VerticesInfo {
 		print <- fmt.Sprintf(" %d -> ", v.Id)
 		for _, c := range v.NextVerticesInfo {
 			print <- fmt.Sprintf("%d ", c.Id)
@@ -90,8 +103,6 @@ func printGraphVerticesInfo(graph *app.Graph, printServerChannel chan string, pa
 			for _, packet := range v.PacketsSeenInfo {
 				if packet == i {
 					seen = true
-				} else if packet > i {
-					break
 				}
 			}
 			if !seen && i/10 > 0 {
@@ -103,7 +114,11 @@ func printGraphVerticesInfo(graph *app.Graph, printServerChannel chan string, pa
 			}
 
 		}
-		printServerChannel <- "\n"
+		printServerChannel <- " |"
+		for _, p := range v.PacketsSeenInfo {
+			printServerChannel <- fmt.Sprintf(" %d", p)
+		}
+		printServerChannel <- fmt.Sprintf(" | %d packets, %d rounds and %d tries\n", len(v.PacketsSeenInfo), v.Rounds, v.Tries)
 	}
 }
 
@@ -119,8 +134,6 @@ func printPacketsInfo(packets []*app.Packet, printServerChannel chan string, n i
 			for _, vertex := range p.VerticesVisited {
 				if vertex == i {
 					seen = true
-				} else if vertex > i {
-					break
 				}
 			}
 			if !seen && i/10 > 0 {
@@ -132,7 +145,18 @@ func printPacketsInfo(packets []*app.Packet, printServerChannel chan string, n i
 			}
 
 		}
-		printServerChannel <- "\n"
+
+		printServerChannel <- " |"
+		for _, v := range p.VerticesVisited {
+			printServerChannel <- fmt.Sprintf(" %d", v)
+		}
+		if p.Life < 0 {
+			printServerChannel <- fmt.Sprintf(" | been in %d vertices, %d lives left, was caught by hunter\n", len(p.VerticesVisited), -p.Life)
+		} else if p.Life == 0 {
+			printServerChannel <- fmt.Sprintf(" | been in %d vertices, died\n", len(p.VerticesVisited))
+		} else {
+			printServerChannel <- fmt.Sprintf(" | been in %d vertices, %d lives left, was received\n", len(p.VerticesVisited), p.Life)
+		}
 	}
 	printServerChannel <- "---------------\n"
 	printServerChannel <- "EOF"
