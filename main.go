@@ -1,7 +1,7 @@
 package main
 
 import (
-	"PW-L1-GO/app"
+	"./app"
 	"fmt"
 	"math"
 	"sort"
